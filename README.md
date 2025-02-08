@@ -35,7 +35,7 @@ If you’re using [lazy.nvim](https://github.com/folke/lazy.nvim) for plugin man
 ```lua
 return {
   {
-    "TangerineGlacier/nvim-tangerine", -- Replace with your GitHub username and repository name
+    "TangerineGlacier/nvim-tangerine",
     config = function()
       require("nvim-tangerine").setup()
     end,
