@@ -7,7 +7,7 @@
 ## Demo
 
 <video controls>
-  <source src="assets/demo.mov" type="video/mov">
+  <source src="assets/demo.mp4" type="video/mov">
   Your browser does not support the video tag.
 </video>
 
