@@ -4,6 +4,13 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
+## Demo
+
+<video controls>
+  <source src="assets/demo.mov" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
 ## Features
 
 - **Intelligent Auto-Completion:**  
