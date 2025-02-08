@@ -157,7 +157,6 @@ local function request_completion()
         end
 
         -- Set ghost text (virtual text) at the current cursor position.
-        -- (Note: vim.api.nvim_win_get_cursor returns {row, col} where row is 1-indexed and col is 0-indexed.)
         local cursor = vim.api.nvim_win_get_cursor(0)
         local row = cursor[1] - 1
         local col = cursor[2]
@@ -173,17 +172,40 @@ end
 
 --------------------------------------------------------------------------------
 -- on_text_change is triggered on TextChangedI.
--- It now respects the auto_enabled flag.
+-- It now respects the auto_enabled flag and activates only for file buffers.
 --------------------------------------------------------------------------------
 local function on_text_change()
+  local buf = vim.api.nvim_get_current_buf()
+
+  -- Only proceed if the buffer is a normal file (i.e. buftype is empty)
+  if vim.api.nvim_buf_get_option(buf, "buftype") ~= "" then
+    return
+  end
+
+  -- Define filetypes where the plugin should not activate.
+  local disallowed_filetypes = {
+    TelescopePrompt = true,
+    NvimTree = true,
+    dashboard = true,
+    fzf = true,
+    ["neo-tree"] = true,
+    quickfix = true,
+  }
+  local ft = vim.api.nvim_buf_get_option(buf, "filetype")
+  if disallowed_filetypes[ft] then
+    return
+  end
+
   if M.ignore_autocomplete_request or not M.auto_enabled then
     return
   end
+
   -- Clear any existing ghost text when the text changes.
   if M.current_suggestion then
     vim.api.nvim_buf_del_extmark(0, ns, M.current_suggestion.extmark_id)
     M.current_suggestion = nil
   end
+
   timer:stop()
   timer:start(4000, 0, vim.schedule_wrap(function()
     request_completion()
