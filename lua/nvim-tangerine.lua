@@ -1,13 +1,13 @@
--- lua/nvim-tangerine.lua
--- nvim-tangerine: A simple Neovim plugin for code auto-completion using Ollama.
+-- File: ~/.config/nvim/lua/nvim-tangerine.lua
+-- nvim-tangerine: A simple Neovim plugin for inline code auto‐completion using Ollama.
 --
 -- This plugin waits for 4 seconds of inactivity in Insert mode before sending
 -- your code context to an Ollama endpoint. When a suggestion is returned,
--- it is offered as an auto-completion candidate. When you accept it (e.g. via Tab),
--- only the missing text is inserted. After accepting a candidate, the plugin
--- will not call the server again for a short period.
+-- it is displayed as ghost text (using virtual text) right after the cursor.
+-- You can accept the suggestion by pressing Ctrl+Shift+Tab, which will insert only
+-- the missing text.
 --
--- Only one notification ("tangerine activated..") will be shown when a response is received from Ollama.
+-- Only one notification ("tangerine activated..") will be shown when a response is received.
 
 local M = {}
 
@@ -16,12 +16,19 @@ local timer = vim.loop.new_timer()
 -- Flag to prevent immediate subsequent server calls after a completion is accepted.
 M.ignore_autocomplete_request = false
 
+-- Hold the current suggestion ghost (if any):
+--   { extmark_id = number, missing = string }
+M.current_suggestion = nil
+
+-- Create (or get) our namespace for extmarks/virtual text.
+local ns = vim.api.nvim_create_namespace("nvim-tangerine")
+
 --------------------------------------------------------------------------------
 -- Compute the missing text by finding the longest common prefix between what
 -- is already typed (before the cursor) and the full suggested line.
 -- Returns:
 --   missing   - The text that should be appended.
---   start_col - The current cursor column.
+--   start_col - The current cursor column (1-indexed).
 --------------------------------------------------------------------------------
 local function compute_missing_text(suggestion)
   local line = vim.api.nvim_get_current_line()
@@ -65,7 +72,7 @@ local function request_completion()
   local payload = vim.fn.json_encode({
     model = "deepseek-coder:6.7b",
     prompt = prompt,
-    stream = false
+    stream = false,
   })
 
   local cmd = {
@@ -74,7 +81,7 @@ local function request_completion()
     "-X", "POST",
     "http://localhost:11434/api/generate",
     "-H", "Content-Type: application/json",
-    "-d", payload
+    "-d", payload,
   }
 
   local output_lines = {}
@@ -92,7 +99,8 @@ local function request_completion()
     on_stderr = function(_, data, _)
       if data and not vim.tbl_isempty(data) then
         vim.schedule(function()
-        --   print("nvim-tangerine error (stderr): " .. vim.inspect(data))
+          -- Uncomment the next line for debugging:
+          -- print("nvim-tangerine error (stderr): " .. vim.inspect(data))
         end)
       end
     end,
@@ -133,14 +141,22 @@ local function request_completion()
           return
         end
 
-        vim.fn.complete(start_col, {
-          {
-            word = missing,
-            abbr = missing,
-            menu = '[nvim-tangerine]',
-            info = 'Ollama code suggestion',
-          },
+        -- Clear any previous suggestion virtual text
+        if M.current_suggestion then
+          vim.api.nvim_buf_del_extmark(0, ns, M.current_suggestion.extmark_id)
+          M.current_suggestion = nil
+        end
+
+        -- Set ghost text (virtual text) at the current cursor position.
+        -- (Note: vim.api.nvim_win_get_cursor returns {row, col} where row is 1-indexed and col is 0-indexed.)
+        local cursor = vim.api.nvim_win_get_cursor(0)
+        local row = cursor[1] - 1
+        local col = cursor[2]
+        local extmark_id = vim.api.nvim_buf_set_extmark(0, ns, row, col, {
+          virt_text = { { missing, "Comment" } },
+          virt_text_pos = "overlay",
         })
+        M.current_suggestion = { extmark_id = extmark_id, missing = missing }
       end)
     end,
   })
@@ -153,6 +169,11 @@ local function on_text_change()
   if M.ignore_autocomplete_request then
     return
   end
+  -- Clear any existing ghost text when the text changes.
+  if M.current_suggestion then
+    vim.api.nvim_buf_del_extmark(0, ns, M.current_suggestion.extmark_id)
+    M.current_suggestion = nil
+  end
   timer:stop()
   timer:start(4000, 0, vim.schedule_wrap(function()
     request_completion()
@@ -160,7 +181,51 @@ local function on_text_change()
 end
 
 --------------------------------------------------------------------------------
--- Setup autocommands for TextChangedI and CompleteDone.
+-- Accept the current ghost suggestion (if any) and insert its text.
+-- The text change is scheduled to avoid synchronous modifications.
+--------------------------------------------------------------------------------
+function M.accept_suggestion()
+  if not M.current_suggestion then
+    return vim.api.nvim_replace_termcodes("<C-S-Tab>", true, true, true)
+  end
+
+  local suggestion = M.current_suggestion.missing
+  -- Remove the ghost text.
+  vim.api.nvim_buf_del_extmark(0, ns, M.current_suggestion.extmark_id)
+  M.current_suggestion = nil
+
+  -- Schedule the insertion of the suggestion text.
+  vim.schedule(function()
+    local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+    local line = vim.api.nvim_get_current_line()
+    local new_line = line:sub(1, col) .. suggestion .. line:sub(col + 1)
+    vim.api.nvim_set_current_line(new_line)
+    vim.api.nvim_win_set_cursor(0, { row, col + #suggestion })
+  end)
+
+  -- Prevent immediate subsequent server calls.
+  M.ignore_autocomplete_request = true
+  vim.defer_fn(function()
+    M.ignore_autocomplete_request = false
+  end, 1000)
+
+  return ""
+end
+
+--------------------------------------------------------------------------------
+-- This function is used in the Ctrl+Shift+Tab mapping.
+-- If a suggestion is active, it is accepted; otherwise, the key sequence is passed through.
+--------------------------------------------------------------------------------
+function M.ctrl_shift_tab_complete()
+  if M.current_suggestion then
+    return M.accept_suggestion()
+  else
+    return vim.api.nvim_replace_termcodes("<C-S-Tab>", true, true, true)
+  end
+end
+
+--------------------------------------------------------------------------------
+-- Setup autocommands and key mappings.
 --------------------------------------------------------------------------------
 function M.setup()
   vim.api.nvim_create_autocmd("TextChangedI", {
@@ -179,6 +244,11 @@ function M.setup()
     end,
     desc = "Ignore server request immediately after completion",
   })
+
+  -- Map Ctrl+Shift+Tab in Insert mode to accept our ghost suggestion if one exists.
+  vim.keymap.set("i", "<C-S-Tab>", function()
+    return M.ctrl_shift_tab_complete()
+  end, { expr = true, noremap = true, silent = true })
 end
 
 return M
