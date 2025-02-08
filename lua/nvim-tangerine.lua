@@ -92,7 +92,7 @@ local function request_completion()
     on_stderr = function(_, data, _)
       if data and not vim.tbl_isempty(data) then
         vim.schedule(function()
-          print("nvim-tangerine error (stderr): " .. vim.inspect(data))
+        --   print("nvim-tangerine error (stderr): " .. vim.inspect(data))
         end)
       end
     end,
@@ -102,7 +102,7 @@ local function request_completion()
           return
         end
 
-        -- Activation notification from Ollama
+        -- Notification when a response is received from Ollama
         vim.notify("tangerine activated..", vim.log.levels.INFO)
 
         local raw_response = table.concat(output_lines, "\n")
@@ -182,4 +182,3 @@ function M.setup()
 end
 
 return M
-
