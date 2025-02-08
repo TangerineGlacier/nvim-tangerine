@@ -10,10 +10,9 @@
 -- Use the commands :TangerineAuto on and :TangerineAuto off to enable or disable
 -- automatic requests to Ollama. By default, auto-completion is enabled.
 --
--- If you do not accept a suggestion and move the cursor (or change text), the ghost
--- suggestion will be cleared automatically.
---
--- Only one notification ("tangerine activated..") will be shown when a response is received.
+-- The new command :TangerineDescribeFile sends your entire file to Ollama with a prompt
+-- asking for a concise description. When a response is received, only the JSON field "response"
+-- is extracted (if available) and then shown in a modal floating window so your current file remains untouched.
 
 local M = {}
 
@@ -108,7 +107,7 @@ local function request_completion()
     on_stderr = function(_, data, _)
       if data and not vim.tbl_isempty(data) then
         vim.schedule(function()
-          -- Uncomment the next line for debugging:
+          -- Uncomment for debugging:
           -- print("nvim-tangerine error (stderr): " .. vim.inspect(data))
         end)
       end
@@ -119,7 +118,6 @@ local function request_completion()
           return
         end
 
-        -- Notification when a response is received from Ollama
         vim.notify("tangerine activated..", vim.log.levels.INFO)
 
         local raw_response = table.concat(output_lines, "\n")
@@ -140,17 +138,10 @@ local function request_completion()
 
         suggestion = suggestion:gsub("^%d+%.%s*", "")
         suggestion = suggestion:gsub("^%s+", ""):gsub("%s+$", "")
-        suggestion = suggestion:gsub("`", "")
         if suggestion == "" then
           return
         end
 
-        local missing, start_col = compute_missing_text(suggestion)
-        if missing == "" then
-          return
-        end
-
-        -- Clear any previous suggestion virtual text
         if M.current_suggestion then
           vim.api.nvim_buf_del_extmark(0, ns, M.current_suggestion.extmark_id)
           M.current_suggestion = nil
@@ -161,10 +152,10 @@ local function request_completion()
         local row = cursor[1] - 1
         local col = cursor[2]
         local extmark_id = vim.api.nvim_buf_set_extmark(0, ns, row, col, {
-          virt_text = { { missing, "Comment" } },
+          virt_text = { { suggestion, "Comment" } },
           virt_text_pos = "overlay",
         })
-        M.current_suggestion = { extmark_id = extmark_id, missing = missing }
+        M.current_suggestion = { extmark_id = extmark_id, missing = suggestion }
       end)
     end,
   })
@@ -177,12 +168,10 @@ end
 local function on_text_change()
   local buf = vim.api.nvim_get_current_buf()
 
-  -- Only proceed if the buffer is a normal file (i.e. buftype is empty)
   if vim.api.nvim_buf_get_option(buf, "buftype") ~= "" then
     return
   end
 
-  -- Define filetypes where the plugin should not activate.
   local disallowed_filetypes = {
     TelescopePrompt = true,
     NvimTree = true,
@@ -200,7 +189,6 @@ local function on_text_change()
     return
   end
 
-  -- Clear any existing ghost text when the text changes.
   if M.current_suggestion then
     vim.api.nvim_buf_del_extmark(0, ns, M.current_suggestion.extmark_id)
     M.current_suggestion = nil
@@ -222,11 +210,9 @@ function M.accept_suggestion()
   end
 
   local suggestion = M.current_suggestion.missing
-  -- Remove the ghost text.
   vim.api.nvim_buf_del_extmark(0, ns, M.current_suggestion.extmark_id)
   M.current_suggestion = nil
 
-  -- Schedule the insertion of the suggestion text.
   vim.schedule(function()
     local row, col = unpack(vim.api.nvim_win_get_cursor(0))
     local line = vim.api.nvim_get_current_line()
@@ -235,7 +221,6 @@ function M.accept_suggestion()
     vim.api.nvim_win_set_cursor(0, { row, col + #suggestion })
   end)
 
-  -- Prevent immediate subsequent server calls.
   M.ignore_autocomplete_request = true
   vim.defer_fn(function()
     M.ignore_autocomplete_request = false
@@ -283,6 +268,160 @@ function M.clear_suggestion()
 end
 
 --------------------------------------------------------------------------------
+-- Helper: Open a modal floating window with padded header and ESC [x] indicator.
+--------------------------------------------------------------------------------
+local function open_floating_window(content)
+  local width = math.floor(vim.o.columns * 0.5)
+  local height = math.floor(vim.o.lines * 0.5)
+  -- Build header with padding.
+  local header = "Tangerine code summary of this file"
+  local close_text = "[x] esc"
+  local header_len = #header
+  local close_len = #close_text
+  local total_padding = width - 4 - header_len - close_len  -- 4 extra spaces for left/right padding
+  if total_padding < 1 then total_padding = 1 end
+  local spaces = string.rep(" ", total_padding)
+  local header_line = "  " .. header .. spaces .. close_text
+
+  -- Build modal content with header and padding.
+  local lines = {}
+  table.insert(lines, header_line)
+  table.insert(lines, "") -- padding after header
+  for _, line in ipairs(vim.split(content, "\n")) do
+    table.insert(lines, "  " .. line)
+  end
+  table.insert(lines, "") -- bottom padding
+
+  local buf = vim.api.nvim_create_buf(false, true)  -- create scratch buffer
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  local opts = {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+  }
+  local win = vim.api.nvim_open_win(buf, true, opts)
+  -- Map <Esc> in normal mode for this buffer to close the window.
+  vim.api.nvim_buf_set_keymap(buf, "n", "<Esc>", "<cmd>close<CR>", { noremap = true, silent = true })
+end
+
+--------------------------------------------------------------------------------
+-- Describe the current file.
+--
+-- This function sends the entire file content along with a prompt to Ollama,
+-- asking for a concise description of the file’s functionality, purpose, and notable features.
+-- It then processes the response exactly like the autocomplete function:
+-- if the raw response begins with a "{", it attempts to decode JSON and, if successful,
+-- uses the "response" field; otherwise it falls back to the raw response.
+-- Finally, the description is displayed in a modal floating window.
+-- An extra cleaning step removes lines that consist only of digits, commas, and spaces.
+-- Also, only the JSON block (balanced curly braces) is extracted for decoding.
+--------------------------------------------------------------------------------
+function M.describe_file()
+  local buf = vim.api.nvim_get_current_buf()
+  local filetype = vim.api.nvim_buf_get_option(buf, "filetype")
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local context = table.concat(lines, "\n")
+
+  vim.notify("Tangerine is analysing....", vim.log.levels.INFO)
+
+  local prompt = string.format(
+    "You are a code analysis assistant. Analyze the following %s file and provide a concise, clear description of its functionality, purpose, and notable features. " ..
+    "Do not include any code snippets, commentary, or extraneous text; provide only the description.\n\n%s",
+    filetype, context
+  )
+
+  local payload = vim.fn.json_encode({
+    model = "deepseek-coder:6.7b",
+    prompt = prompt,
+    stream = false,
+  })
+
+  local cmd = {
+    "curl",
+    "-s",
+    "-X", "POST",
+    "http://localhost:11434/api/generate",
+    "-H", "Content-Type: application/json",
+    "-d", payload,
+  }
+
+  local output_lines = {}
+
+  vim.fn.jobstart(cmd, {
+    on_stdout = function(_, data, _)
+      if data and not vim.tbl_isempty(data) then
+        for _, line in ipairs(data) do
+          if line and line ~= "" then
+            table.insert(output_lines, line)
+          end
+        end
+      end
+    end,
+    on_stderr = function(_, data, _)
+      if data and not vim.tbl_isempty(data) then
+        vim.schedule(function()
+          -- Uncomment for debugging:
+          -- print("nvim-tangerine describe error (stderr): " .. vim.inspect(data))
+        end)
+      end
+    end,
+    on_exit = function(_, exit_code, _)
+      vim.schedule(function()
+        if exit_code ~= 0 then
+          vim.notify("Error generating file description", vim.log.levels.ERROR)
+          return
+        end
+
+        local raw_response = table.concat(output_lines, "\n")
+        raw_response = raw_response:gsub("^%s+", ""):gsub("%s+$", "")
+        if raw_response == "" then
+          vim.notify("No description received", vim.log.levels.WARN)
+          return
+        end
+
+        -- Try decoding the entire response as JSON.
+        local ok, decoded = pcall(vim.fn.json_decode, raw_response)
+        local description = raw_response
+        if ok and type(decoded) == "table" and decoded.response and decoded.response ~= "" then
+          description = decoded.response
+        else
+          -- If decoding fails, try extracting a JSON block.
+          local json_text = raw_response:match("^(%b{})")
+          if json_text then
+            ok, decoded = pcall(vim.fn.json_decode, json_text)
+            if ok and type(decoded) == "table" and decoded.response and decoded.response ~= "" then
+              description = decoded.response
+            end
+          end
+        end
+
+        description = description:gsub("^%d+%.%s*", "")
+        description = description:gsub("^%s+", ""):gsub("%s+$", "")
+
+        -- Remove lines that consist solely of digits, commas, and whitespace.
+        local cleaned_lines = {}
+        for _, line in ipairs(vim.split(description, "\n")) do
+          if not line:match("^%s*[%d,%s]+%s*$") then
+            table.insert(cleaned_lines, line)
+          end
+        end
+        description = table.concat(cleaned_lines, "\n")
+        if description == "" then
+          return
+        end
+
+        open_floating_window(description)
+        vim.notify("File description generated", vim.log.levels.INFO)
+      end)
+    end,
+  })
+end
+
+--------------------------------------------------------------------------------
 -- Setup autocommands, key mappings, and user commands.
 --------------------------------------------------------------------------------
 function M.setup()
@@ -303,7 +442,6 @@ function M.setup()
     desc = "Ignore server request immediately after completion",
   })
 
-  -- Clear the ghost suggestion when moving the cursor in Insert mode.
   vim.api.nvim_create_autocmd("CursorMovedI", {
     pattern = "*",
     callback = function()
@@ -315,12 +453,10 @@ function M.setup()
     desc = "Clear ghost suggestion when moving the cursor in Insert mode",
   })
 
-  -- Map Ctrl+Shift+Tab in Insert mode to accept our ghost suggestion if one exists.
   vim.keymap.set("i", "<C-S-Tab>", function()
     return M.ctrl_shift_tab_complete()
   end, { expr = true, noremap = true, silent = true })
 
-  -- Create user command :TangerineAuto to toggle auto-completion.
   vim.api.nvim_create_user_command("TangerineAuto", function(opts)
     if opts.args == "on" then
       M.auto_on()
@@ -330,6 +466,10 @@ function M.setup()
       vim.notify("Usage: :TangerineAuto [on|off]", vim.log.levels.ERROR)
     end
   end, { nargs = 1, complete = function() return {"on", "off"} end })
+
+  vim.api.nvim_create_user_command("TangerineDescribeFile", function()
+    M.describe_file()
+  end, { nargs = 0 })
 end
 
 return M
