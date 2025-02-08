@@ -7,6 +7,12 @@
 -- You can accept the suggestion by pressing Ctrl+Shift+Tab, which will insert only
 -- the missing text.
 --
+-- Use the commands :TangerineAuto on and :TangerineAuto off to enable or disable
+-- automatic requests to Ollama. By default, auto-completion is enabled.
+--
+-- If you do not accept a suggestion and move the cursor (or change text), the ghost
+-- suggestion will be cleared automatically.
+--
 -- Only one notification ("tangerine activated..") will be shown when a response is received.
 
 local M = {}
@@ -15,6 +21,9 @@ local timer = vim.loop.new_timer()
 
 -- Flag to prevent immediate subsequent server calls after a completion is accepted.
 M.ignore_autocomplete_request = false
+
+-- Flag to control whether auto-completion requests are sent.
+M.auto_enabled = true
 
 -- Hold the current suggestion ghost (if any):
 --   { extmark_id = number, missing = string }
@@ -164,9 +173,10 @@ end
 
 --------------------------------------------------------------------------------
 -- on_text_change is triggered on TextChangedI.
+-- It now respects the auto_enabled flag.
 --------------------------------------------------------------------------------
 local function on_text_change()
-  if M.ignore_autocomplete_request then
+  if M.ignore_autocomplete_request or not M.auto_enabled then
     return
   end
   -- Clear any existing ghost text when the text changes.
@@ -225,7 +235,33 @@ function M.ctrl_shift_tab_complete()
 end
 
 --------------------------------------------------------------------------------
--- Setup autocommands and key mappings.
+-- Enable auto-completion requests.
+--------------------------------------------------------------------------------
+function M.auto_on()
+  M.auto_enabled = true
+  vim.notify("Tangerine auto completion enabled", vim.log.levels.INFO)
+end
+
+--------------------------------------------------------------------------------
+-- Disable auto-completion requests.
+--------------------------------------------------------------------------------
+function M.auto_off()
+  M.auto_enabled = false
+  vim.notify("Tangerine auto completion disabled", vim.log.levels.INFO)
+end
+
+--------------------------------------------------------------------------------
+-- Clear any existing ghost suggestion.
+--------------------------------------------------------------------------------
+function M.clear_suggestion()
+  if M.current_suggestion then
+    vim.api.nvim_buf_del_extmark(0, ns, M.current_suggestion.extmark_id)
+    M.current_suggestion = nil
+  end
+end
+
+--------------------------------------------------------------------------------
+-- Setup autocommands, key mappings, and user commands.
 --------------------------------------------------------------------------------
 function M.setup()
   vim.api.nvim_create_autocmd("TextChangedI", {
@@ -245,10 +281,33 @@ function M.setup()
     desc = "Ignore server request immediately after completion",
   })
 
+  -- Clear the ghost suggestion when moving the cursor in Insert mode.
+  vim.api.nvim_create_autocmd("CursorMovedI", {
+    pattern = "*",
+    callback = function()
+      if M.current_suggestion then
+        vim.api.nvim_buf_del_extmark(0, ns, M.current_suggestion.extmark_id)
+        M.current_suggestion = nil
+      end
+    end,
+    desc = "Clear ghost suggestion when moving the cursor in Insert mode",
+  })
+
   -- Map Ctrl+Shift+Tab in Insert mode to accept our ghost suggestion if one exists.
   vim.keymap.set("i", "<C-S-Tab>", function()
     return M.ctrl_shift_tab_complete()
   end, { expr = true, noremap = true, silent = true })
+
+  -- Create user command :TangerineAuto to toggle auto-completion.
+  vim.api.nvim_create_user_command("TangerineAuto", function(opts)
+    if opts.args == "on" then
+      M.auto_on()
+    elseif opts.args == "off" then
+      M.auto_off()
+    else
+      vim.notify("Usage: :TangerineAuto [on|off]", vim.log.levels.ERROR)
+    end
+  end, { nargs = 1, complete = function() return {"on", "off"} end })
 end
 
 return M
