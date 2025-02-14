@@ -1,5 +1,9 @@
 
 # nvim-tangerine
+<div align="center">
+  <img src="/assets/tangerine.jpg" alt="Tangerine" width="200"/>
+</div>
+
 
 **nvim-tangerine** is a cutting-edge Neovim plugin that brings intelligent, context-aware code auto-completion to your fingertips using the power of Ollama. Designed with modern developers in mind, this plugin enhances your coding workflow by providing precise, on-demand suggestions that integrate seamlessly with your editor.
 
