@@ -1,7 +1,7 @@
 
 <div align="center">
   
-# nvim-tangerine
+# Nvim Tangerine
 <br>
 
   <img src="/assets/tangerine.jpg" alt="Tangerine" width="200"/>
