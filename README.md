@@ -132,10 +132,6 @@ nvim-tangerine works perfectly right out-of-the-box, but if you’re a power use
 
 Contributions are what make the open-source community such an amazing place to learn, inspire, and create. If you have suggestions, bug fixes, or improvements, please open an issue or submit a pull request. Let’s build something extraordinary together!
 
-## License
-
-This project is licensed under the [MIT License](LICENSE). Use it freely in your projects, contribute to its development, and share it with your fellow developers.
-
 ## Acknowledgements
 
 A huge thank you to the developers behind Neovim, Ollama, and [Tree-sitter](https://github.com/tree-sitter/tree-sitter). Their innovation and commitment to open-source have inspired the creation of tools like nvim-tangerine, making a positive impact on the coding community worldwide.
